@@ -1,0 +1,182 @@
+(*
+ * t-rust-db -- column-rs SQL grammar source of truth
+ *
+ * Structural re-derivation of sql-parser's actual recursive-descent parser
+ * (db-core/sql-parser/src/lib.rs) in standard EBNF -- not an aspirational
+ * spec. Every rule here has a corresponding parser function; nothing is
+ * listed as supported that parse()/parse_explain() cannot actually accept.
+ *
+ * Modeled on sqlite-rs's grammar file (sqlite-rs/.openspec/grammar/
+ * sqlite.ebnf) for notation and maintenance-rule conventions, so the two
+ * grammars read the same way if ever compared side by side -- but this
+ * file describes a genuinely different, much smaller language: column-rs
+ * is an analytics VM over Parquet, not a general-purpose SQL engine, and
+ * has no DDL/DML, no transactions, no PRAGMA, no CTEs, no table aliases.
+ *
+ * Maintenance rule: any change to sql-parser's grammar MUST update this
+ * file in the same PR/commit.
+ *
+ * Notation: ::=  rule definition          |    alternation
+ *           []   optional (0 or 1)        {}   repetition (0 or more)
+ *           ""   literal keyword/punct (keywords case-insensitive)
+ *           UPPERCASE  lexer token
+ *)
+
+(* ===================== Top level ===================== *)
+
+sql-stmt        ::= [ "EXPLAIN" [ "QUERY" "PLAN" ] ] select-stmt ;
+                     (* the ONLY statement form -- no INSERT/UPDATE/DELETE/
+                        DDL/transactions/PRAGMA; column-rs reads Parquet,
+                        it never writes *)
+
+(* ===================== SELECT ===================== *)
+
+select-stmt     ::= "SELECT" select-list
+                     "FROM" table-name
+                     { join-clause }
+                     [ where-clause ]
+                     [ group-by-clause ]
+                     [ order-by-clause ]
+                     [ limit-clause ] ;
+
+select-list     ::= select-item { "," select-item } ;
+
+select-item     ::= column-ref
+                   | agg-call
+                   | window-call ;
+                     (* no `*` -- every column must be named; no arbitrary
+                        expressions in the select list beyond a bare
+                        column, an aggregate call, or a window call *)
+
+agg-call        ::= agg-func "(" ( column-ref | "*" ) ")" ;
+                     (* `*` only valid for COUNT -- COUNT(*); enforced at
+                        the AST/execution layer, not the grammar *)
+
+agg-func        ::= "COUNT" | "SUM" | "AVG" | "MIN" | "MAX" ;
+
+window-call     ::= ranking-call | offset-call | value-call | agg-over-call ;
+
+ranking-call    ::= ( "ROW_NUMBER" | "RANK" | "DENSE_RANK" ) "(" ")"
+                     "OVER" over-clause ;
+
+offset-call     ::= ( "LAG" | "LEAD" ) "(" column-ref [ "," INTEGER ] ")"
+                     "OVER" over-clause ;
+                     (* INTEGER is the offset, default 1 when omitted --
+                        the default is applied by the AST layer, not here *)
+
+value-call      ::= ( "FIRST_VALUE" | "LAST_VALUE" ) "(" column-ref ")"
+                     "OVER" over-clause ;
+
+agg-over-call   ::= ( "SUM" | "AVG" | "COUNT" ) "(" column-ref ")"
+                     "OVER" over-clause ;
+
+over-clause     ::= "(" [ "PARTITION" "BY" ident-list ]
+                         [ "ORDER" "BY" order-item { "," order-item } ]
+                     ")" ;
+
+(* ===================== FROM / JOIN =====================
+ * Equi-joins only, one ON clause per join, no table aliases -- a
+ * right-table column must be qualified with the real table name
+ * (`orders.id`), not an alias. No comma-join, no CROSS/NATURAL/RIGHT/FULL,
+ * no USING(...), no subqueries in FROM. *)
+
+join-clause     ::= join-kind table-name "ON" column-ref "=" column-ref ;
+
+join-kind       ::= "JOIN"
+                   | "INNER" "JOIN"
+                   | "LEFT" [ "OUTER" ] "JOIN" ;
+
+(* ===================== WHERE =====================
+ * Two mutually exclusive forms: an expression, or a bare semi-join. The
+ * semi-join form must be the ENTIRE where-clause -- it cannot be combined
+ * with other conditions via AND/OR (unlike a real SQL engine, where
+ * `x IN (...)` is just another boolean-valued expression). *)
+
+where-clause    ::= "WHERE" ( semi-join | expr ) ;
+
+semi-join       ::= column-ref "IN" "(" select-stmt ")" ;
+                     (* the subquery is itself a full select-stmt,
+                        recursively -- but see select-stmt's caller: a
+                        subquery position stops at its closing ")" rather
+                        than expecting end-of-input, unlike the top-level
+                        statement *)
+
+(* ===================== Expressions =====================
+ * Standard precedence climb: OR < AND < comparison < additive <
+ * multiplicative < primary. No NOT, no unary minus, no LIKE/BETWEEN/
+ * IS NULL, no string concatenation, no CASE. *)
+
+expr            ::= or-expr ;
+
+or-expr         ::= and-expr { "OR" and-expr } ;
+
+and-expr        ::= comparison { "AND" comparison } ;
+
+comparison      ::= additive [ comp-op additive ] ;
+                     (* non-associative: `a = b = c` is not accepted --
+                        at most one comparison operator per comparison
+                        level *)
+
+comp-op         ::= "=" | "!=" | "<>" | "<" | "<=" | ">" | ">=" ;
+
+additive        ::= multiplicative { ( "+" | "-" ) multiplicative } ;
+
+multiplicative  ::= primary { ( "*" | "/" ) primary } ;
+
+primary         ::= column-ref
+                   | INTEGER
+                   | FLOAT
+                   | STRING
+                   | "(" expr ")" ;
+
+(* ===================== GROUP BY / ORDER BY / LIMIT ===================== *)
+
+group-by-clause ::= "GROUP" "BY" ident-list ;
+
+order-by-clause ::= "ORDER" "BY" column-ref [ "ASC" | "DESC" ] ;
+                     (* exactly one column -- no multi-column ORDER BY *)
+
+order-item      ::= column-ref [ "ASC" | "DESC" ] ;
+                     (* used inside OVER (...ORDER BY...), which DOES
+                        allow multiple columns, unlike the top-level
+                        order-by-clause above *)
+
+limit-clause    ::= "LIMIT" INTEGER ;
+                     (* non-negative integer only; no OFFSET *)
+
+(* ===================== Lexical ===================== *)
+
+ident-list      ::= column-ref { "," column-ref } ;
+
+column-ref      ::= IDENT [ "." IDENT ] ;
+                     (* `col` or `table.col`; more than one `.` is not a
+                        column reference this grammar recognizes (no
+                        schema.table.col) *)
+
+table-name      ::= IDENT ;
+                     (* the Parquet file's stem, per column-rs's table
+                        resolution -- not validated by the grammar itself *)
+
+IDENT           ::= ( ALPHA | "_" ) { ALPHA | DIGIT | "_" } ;
+INTEGER         ::= DIGIT { DIGIT } ;
+FLOAT           ::= DIGIT { DIGIT } "." DIGIT { DIGIT } ;
+STRING          ::= "'" { any character except "'" } "'" ;
+                     (* no escape sequences, no doubled-quote escaping *)
+
+(* ===================== Not supported (deliberately) =====================
+ * Tracked here so the grammar's negative space is visible, not just its
+ * positive space. Adding any of these means growing sql-parser AND this
+ * file in the same change (see Maintenance rule above).
+ *
+ *   - SELECT *
+ *   - table aliases (`FROM orders o`)
+ *   - comma-join, CROSS/NATURAL/RIGHT/FULL JOIN, USING(...)
+ *   - subqueries in FROM
+ *   - multiple WHERE conditions combined with a semi-join
+ *   - NOT, unary minus, LIKE, BETWEEN, IS [NOT] NULL, CASE
+ *   - string concatenation
+ *   - multi-column ORDER BY at the top level (only inside OVER (...))
+ *   - OFFSET
+ *   - INSERT/UPDATE/DELETE/CREATE/DROP/ALTER -- column-rs never writes
+ *   - transactions, PRAGMA, CTEs (WITH), views
+ *)
