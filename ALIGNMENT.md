@@ -60,16 +60,31 @@ t-rust-db wants a per-file header at some point, it should name its own
 actual owner/org, decided explicitly rather than inherited by copy-paste
 from a different project's convention.
 
-### 3. No shared opcode set (by design, not oversight)
+### 3. Opcode sets: reversed decision (2026-09-02, same day)
 
-sqlite-rs's VDBE has ~65 SQLite-specific opcodes (`src/vdbe/program.rs`);
-column-rs's VM has 10 columnar/vectorized opcodes (`src/vm.rs`). These
-were evaluated for sharing during the September 2026 architecture
-discussion (see `projects/database-rs/unified-vm-vision.md` outside this
-repo) and deliberately kept separate — one is row/cursor-oriented and
-B-tree-coupled, the other is batch/columnar and Parquet-oriented. Nothing
-to reconcile here; recorded so a future reader doesn't rediscover the
-same question.
+**Original call (superseded):** sqlite-rs's VDBE has ~65 SQLite-specific
+opcodes (`src/vdbe/program.rs`); column-rs's VM had 10 columnar/vectorized
+opcodes (in column-rs's own private `src/vm.rs` at the time). These were
+evaluated for sharing during the initial architecture discussion (see
+`projects/database-rs/unified-vm-vision.md` outside this repo) and kept
+deliberately separate — `RowExecutor` inside sqlite-rs only, `BatchExecutor`
+shared.
+
+**Reversed same day.** column-rs's VM was extracted into `db-core/sql-vm`
+as `sql_vm::batch` (the `BatchExecutor`), and `sql-vm` was structured with
+room for all three executors — `batch` (implemented), `row` and `stream`
+(stubs) — rather than splitting "the VM" across two repos by execution
+strategy. `row` (the eventual `RowExecutor` home) is explicitly a
+placeholder, not a port of sqlite-rs's actual 65-opcode VDBE — whether it
+ends up sharing an opcode *set* with sqlite-rs or just the row-at-a-time
+*execution strategy* while keeping distinct opcodes is still open (see
+`sql-vm/src/row.rs`'s own doc comment).
+
+**What this means for sqlite-rs specifically:** nothing has moved out of
+sqlite-rs yet, and sqlite-rs's own VDBE is untouched — `db-core/sql-vm`
+is a new, so-far-column-rs-only crate that happens to have room reserved
+for a row executor. Re-check this section once `row.rs` gets real content
+or sqlite-rs is asked to depend on it.
 
 ### 4. `JoinKind` vs sqlite-rs's `JoinOp` — still a real gap, still open
 
