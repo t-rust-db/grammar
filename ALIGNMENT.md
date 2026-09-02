@@ -71,6 +71,21 @@ B-tree-coupled, the other is batch/columnar and Parquet-oriented. Nothing
 to reconcile here; recorded so a future reader doesn't rediscover the
 same question.
 
+### 4. `JoinKind` vs sqlite-rs's `JoinOp` — still a real gap, still open
+
+`sql_expr::JoinKind` (`db-core/sql-expr/src/lib.rs`) has 2 variants:
+`Inner`, `Left`. sqlite-rs's `JoinOp` (`sqlite-rs/tests/unit/parser.rs`
+usage confirms at least `Inner`, `Left`, `Cross` exist) has more —
+tracking a `CROSS`/`RIGHT`/`FULL JOIN` grammar sqlite-rs already parses
+and t-rust-db's `column-rs` does not.
+
+Checked as of 2026-09-02 while working issue #1: a companion db-core
+issue is in flight to grow `sql-parser`/`sql-expr` with `SELECT *`, table
+aliases, and `CROSS`/`RIGHT`/`FULL JOIN` (which would grow `JoinKind` to
+match). As of this check, `sql-expr::JoinKind` was still exactly
+`Inner`/`Left` — the gap has not yet closed. Re-check this section once
+that work lands (or update it directly if you're the one landing it).
+
 ## What to check again before any future integration
 
 - If `sql-types::Value` ever gains real users (beyond the placeholder

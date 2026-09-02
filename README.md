@@ -21,6 +21,10 @@ is a much smaller analytics-over-Parquet language with no DDL/DML/write
 path at all. See `ALIGNMENT.md` for what was checked and deliberately
 left unmerged.
 
+sqlite-rs's own grammar lives at `sqlite-rs/.openspec/grammar/sqlite.ebnf`
+in that repo. This repo references it rather than mirroring a copy here —
+see `DECISIONS.md` for why.
+
 ## Maintenance rule
 
 Any change to a parser's grammar (currently: `db-core/sql-parser`) MUST
