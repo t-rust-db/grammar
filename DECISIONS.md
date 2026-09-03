@@ -73,7 +73,13 @@ which no longer exists as a single file post-split — updated to
 `row` section. `README.md` gained a section describing both
 `sql-parser` sections and why only `column` gets a `.ebnf` file here.
 
-## sqlite-rs is being absorbed into `t-rust-db` — promote the grammar file after all (2026-09-03)
+## sqlite-rs is being absorbed into `t-rust-db` — promote the grammar file after all (2026-09-03) — PARTIALLY SUPERSEDED
+
+**Partially superseded, same day**, by "Unify column-rs.ebnf and
+sqlite-rs.ebnf into one file, three sections" below — the underlying
+call here (promote sqlite-rs's grammar into this repo rather than only
+referencing it) still stands; only the *file layout* changed, from a
+second standalone `sqlite-rs.ebnf` to a section of one `sql.ebnf`.
 
 Both decisions above reasoned from "sqlite-rs is a separate,
 pre-existing project" with its own canonical grammar home and its own
@@ -104,3 +110,48 @@ source for now.
   that repo currently lives) MUST update `sqlite-rs.ebnf` here in the
   same PR/commit, same obligation `column-rs.ebnf` already carries for
   `db-core/sql-parser::column`.
+
+## Unify column-rs.ebnf and sqlite-rs.ebnf into one file, three sections (2026-09-03)
+
+Explicit ask: one file, three sections -- shared, column-rs-only,
+sqlite-rs-only (including DDL) -- looking for real synergy between the
+two grammars now that they sit in the same repo (and, per the entry
+above, will likely sit in the same org).
+
+**Decision: `sql.ebnf` replaces both `column-rs.ebnf` and
+`sqlite-rs.ebnf`.** Section 1 (Shared) holds exactly two productions:
+`ident-chars` (the unquoted-identifier character class) and
+`explain-prefix` (the `EXPLAIN [QUERY PLAN]` token sequence). Sections 2
+and 3 are otherwise each engine's grammar unchanged, just relocated
+under one file's headings instead of two files.
+
+**Why the Shared section is this small.** A rule only qualifies if (a)
+both engines accept exactly the same input for it, and (b) it doesn't
+reference a nonterminal that itself diverges per engine. Condition (b)
+ruled out more than it looks like it should:
+
+- `expr ::= or-expr ;`, `or-expr ::= and-expr { "OR" and-expr } ;`, and
+  `and-expr ::= not-expr { "AND" not-expr } ;` are textually IDENTICAL
+  in both grammars -- genuinely tempting to deduplicate. But `and-expr`
+  bottoms out into `not-expr`, and each engine's `not-expr` differs
+  (column-rs: `not-expr | comparison`; sqlite-rs: `{ "NOT" }
+  equality-expr`, feeding a much richer operator ladder with `==`, `%`,
+  string concat, `COLLATE`, and more that column-rs has no equivalent
+  for). A single shared `and-expr` would have to pick one `not-expr` to
+  point at, silently misdescribing the other engine's grammar. Kept
+  separate, per engine, with a comment cross-referencing the identical
+  wording so an editor syncing one remembers to check the other.
+- Comparison operators, arithmetic precedence, identifiers (beyond the
+  bare character class), string-literal escaping, and JOIN grammar were
+  all checked and rejected for the same reason or a direct behavioral
+  difference (sqlite-rs accepts `==`/`%`/quoted identifiers/`''`-escaped
+  strings/a much larger JOIN chain; column-rs doesn't).
+
+**What this means for future edits.** Rule NAMES still repeat across
+sections 2 and 3 (`sql-stmt`, `expr`, `table-name`, `column-ref`, ...) —
+each section is a complete, self-contained grammar when read on its
+own, exactly as the two former files were. That's deliberate, not an
+oversight: forcing every same-named rule into one shared definition is
+what produced the `and-expr`/`not-expr` problem above. Before adding
+anything to Shared, verify it survives BOTH conditions (a) and (b), not
+just "these two rules currently look alike."
