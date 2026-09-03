@@ -2,9 +2,11 @@
  * t-rust-db -- column-rs SQL grammar source of truth
  *
  * Structural re-derivation of sql-parser's actual recursive-descent parser
- * (db-core/sql-parser/src/lib.rs) in standard EBNF -- not an aspirational
- * spec. Every rule here has a corresponding parser function; nothing is
- * listed as supported that parse()/parse_explain() cannot actually accept.
+ * (db-core/sql-parser/src/column.rs -- the `column` Cargo-feature section
+ * of sql-parser, which also gained a `row` section for sqlite-rs's own
+ * grammar; see README.md) in standard EBNF -- not an aspirational spec.
+ * Every rule here has a corresponding parser function; nothing is listed
+ * as supported that parse()/parse_explain() cannot actually accept.
  *
  * Modeled on sqlite-rs's grammar file (sqlite-rs/.openspec/grammar/
  * sqlite.ebnf) for notation and maintenance-rule conventions, so the two

@@ -27,3 +27,38 @@ Reasoning:
 
 Acted on this by adding a pointer in `README.md` to sqlite-rs's grammar
 file instead of copying it.
+
+## Revisited after `db-core/sql-parser`'s row/column split — decision holds (2026-09-03)
+
+`db-core#24` asked to revisit the above now that `sql-parser` unifies
+into one crate with `column`/`row` Cargo-feature sections (`db-core` ADR
+0002), with `row` migrating in sqlite-rs's own parser
+(`src/parser/tokenizer.rs`/`ast.rs`/`grammar.rs`/`error.rs`/`printer.rs`)
+essentially unchanged (`db-core#23`).
+
+**Decision: still reference, still don't mirror — no `sqlite-rs.ebnf`
+added here.** If anything, the original reasoning is stronger now:
+
+- The original concern was two grammar files drifting because they're
+  maintained by different processes. `sql-parser::row` isn't a second
+  *independent* grammar someone could accidentally grow out of sync with
+  sqlite-rs's `.openspec/grammar/sqlite.ebnf` — it's a migrated *copy* of
+  the code sqlite-rs's own grammar file already documents. There is
+  nothing new here for a `.ebnf` file to describe that sqlite-rs's own
+  doesn't already cover.
+- `sql-parser::row`'s own AST is sqlite-rs's AST (ADR 0002's amendment:
+  folding it into `sql_expr::Query` would have been a redesign, not a
+  port) — so even the "genuinely different, much smaller language" case
+  `column-rs.ebnf` exists for doesn't apply to `row`. `row` isn't a new
+  language variant; it's sqlite-rs's language, running in a different
+  crate.
+- Should `sql-parser::row` ever diverge from a straight port (its own
+  bug fixes, its own grammar extensions not yet upstreamed to
+  sqlite-rs), that's the trigger to revisit this again — not before.
+
+`column-rs.ebnf` itself needed one small fix, unrelated to this
+question: its header comment cited `db-core/sql-parser/src/lib.rs`,
+which no longer exists as a single file post-split — updated to
+`db-core/sql-parser/src/column.rs`, plus a note pointing at the new
+`row` section. `README.md` gained a section describing both
+`sql-parser` sections and why only `column` gets a `.ebnf` file here.
