@@ -1,11 +1,16 @@
 # Alignment with sqlite-rs
 
-sqlite-rs is a separate, pre-existing project (github.com/iheitlager/
-sqlite-rs, developed under a Schuberg Philis-owned context). t-rust-db is
-a new, separate org. This note records what was checked to avoid future
-collisions if/when the two ever need to interoperate (e.g. a shared
-`RowExecutor`, a shared type, or a shared grammar file) — and what was
-deliberately left unresolved rather than silently decided.
+sqlite-rs started as a separate, pre-existing project
+(github.com/iheitlager/sqlite-rs, developed under a Schuberg
+Philis-owned context) and is being absorbed into `t-rust-db`
+(`t-rust-db/sqlite-rs` already exists as the destination repo) — see
+`DECISIONS.md`'s "sqlite-rs is being absorbed into `t-rust-db`" entry,
+which reverses this note's original "separate org" framing for the
+grammar-file question specifically. This note records what was checked
+to avoid collisions between the two codebases' *other* conventions
+(naming, types, copyright headers) even as the org boundary between
+them closes — and what was deliberately left unresolved rather than
+silently decided.
 
 ## Checked and fine
 
@@ -118,12 +123,15 @@ switches to depending on `sql_parser::row` instead of its own copy is a
 separate, larger question (its own crate publishing/versioning story)
 not decided by this convergence.
 
-**What this means for this repo:** see `DECISIONS.md`'s entry
-"Revisited after `db-core/sql-parser`'s row/column split — decision
-holds" — `column-rs.ebnf` remains this repo's only `.ebnf` file.
-`sql_parser::row` doesn't get one: it's a copy of sqlite-rs's grammar,
-not an independent one, so sqlite-rs's own `.openspec/grammar/
-sqlite.ebnf` already covers it.
+**What this means for this repo:** updated same day sqlite-rs's
+absorption into `t-rust-db` became clear — see `DECISIONS.md`'s
+"sqlite-rs is being absorbed into `t-rust-db`" entry (superseding the
+"decision holds, no `sqlite-rs.ebnf`" call made earlier the same day).
+`sqlite-rs.ebnf` is now promoted here too, alongside `column-rs.ebnf` —
+not because `sql_parser::row` needed its own file (it still doesn't; it
+stays a copy of sqlite-rs's grammar), but because sqlite-rs itself
+stopped being "a different repo in a different org" to reference instead
+of mirror.
 
 ## What to check again before any future integration
 

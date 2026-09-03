@@ -1,6 +1,10 @@
 # Decisions
 
-## Reference sqlite-rs's grammar file, don't mirror it (2026-09-02)
+## Reference sqlite-rs's grammar file, don't mirror it (2026-09-02) — SUPERSEDED
+
+**Superseded 2026-09-03** by "sqlite-rs is being absorbed into
+`t-rust-db` — promote the grammar file after all" below. Kept here for
+history, not because it's still in effect.
 
 Issue #1 asked whether this repo should also carry a `sqlite-rs.ebnf`,
 promoted/copied from sqlite-rs's own `.openspec/grammar/sqlite.ebnf`.
@@ -28,7 +32,13 @@ Reasoning:
 Acted on this by adding a pointer in `README.md` to sqlite-rs's grammar
 file instead of copying it.
 
-## Revisited after `db-core/sql-parser`'s row/column split — decision holds (2026-09-03)
+## Revisited after `db-core/sql-parser`'s row/column split — decision holds (2026-09-03) — SUPERSEDED
+
+**Superseded later the same day** once it became clear sqlite-rs itself
+is being absorbed into `t-rust-db` (not just its parser code) — see
+"sqlite-rs is being absorbed into `t-rust-db`" below. Both entries'
+premise ("sqlite-rs is a separate, pre-existing project" with its own
+canonical grammar home) no longer holds; kept here for history.
 
 `db-core#24` asked to revisit the above now that `sql-parser` unifies
 into one crate with `column`/`row` Cargo-feature sections (`db-core` ADR
@@ -62,3 +72,35 @@ which no longer exists as a single file post-split — updated to
 `db-core/sql-parser/src/column.rs`, plus a note pointing at the new
 `row` section. `README.md` gained a section describing both
 `sql-parser` sections and why only `column` gets a `.ebnf` file here.
+
+## sqlite-rs is being absorbed into `t-rust-db` — promote the grammar file after all (2026-09-03)
+
+Both decisions above reasoned from "sqlite-rs is a separate,
+pre-existing project" with its own canonical grammar home and its own
+maintenance process — that was the entire basis for referencing rather
+than mirroring. That premise is gone: sqlite-rs is being absorbed into
+the `t-rust-db` org (`t-rust-db/sqlite-rs` already exists as the
+destination repo). Once sqlite-rs is a `t-rust-db` repo like any other,
+"its grammar file lives in a different org's repo, don't duplicate
+across org boundaries" no longer applies — it's the same org's grammar,
+same as `column-rs.ebnf` already is.
+
+**Decision: promote sqlite-rs's grammar file here, as `sqlite-rs.ebnf`.**
+Copied verbatim from `sqlite-rs/.openspec/grammar/sqlite.ebnf` (V-block
+annotations, `parse.y` line refs, and all — that provenance metadata is
+still accurate and still useful, it just now lives in a second place
+too). The header notes the promotion and points back at the canonical
+source for now.
+
+**What still needs deciding, not resolved by this entry:**
+- Whether `sqlite-rs.ebnf` here becomes the *only* copy (with sqlite-rs's
+  own `.openspec/grammar/sqlite.ebnf` removed once absorption completes)
+  or a synced copy stays in both places long-term. Depends on how the
+  broader sqlite-rs -> `t-rust-db/sqlite-rs` absorption is actually
+  carried out (a straight repo move vs. an ongoing two-repo period) —
+  outside this repo's scope to decide alone.
+- Until that's settled, the Maintenance rule (`README.md`) treats this
+  as a synced copy: any change to sqlite-rs's parser grammar (wherever
+  that repo currently lives) MUST update `sqlite-rs.ebnf` here in the
+  same PR/commit, same obligation `column-rs.ebnf` already carries for
+  `db-core/sql-parser::column`.
