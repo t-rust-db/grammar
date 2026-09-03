@@ -253,9 +253,9 @@ semi-join       ::= column-ref "IN" "(" select-stmt ")" ;
                         statement *)
 
 (* ----- Expressions -----
- * Standard precedence climb: OR < AND < NOT < comparison < additive <
- * multiplicative < primary. No unary minus, no LIKE/BETWEEN, no string
- * concatenation, no CASE.
+ * Standard precedence climb: OR < AND < NOT < comparison < concat <
+ * additive < multiplicative < unary < primary (db-core#34 added concat/
+ * unary). No LIKE/BETWEEN, no CASE.
  *
  * `expr`/`or-expr`/`and-expr` below are textually IDENTICAL to sqlite-
  * rs's own (section 3) -- deliberately NOT moved to SHARED, because
@@ -275,7 +275,7 @@ not-expr        ::= "NOT" not-expr
                         tighter than AND/OR, looser than comparison:
                         `NOT a = b AND c` is `(NOT (a = b)) AND c` *)
 
-comparison      ::= additive [ ( comp-op additive ) | ( "IS" [ "NOT" ] "NULL" ) ] ;
+comparison      ::= concat [ ( comp-op concat ) | ( "IS" [ "NOT" ] "NULL" ) ] ;
                      (* non-associative: `a = b = c` is not accepted --
                         at most one comparison operator (or one
                         IS [NOT] NULL test) per comparison level *)
@@ -286,10 +286,27 @@ comp-op         ::= comparison-op ;
                         non-chainable precedence tier, where sqlite-rs
                         splits it across two (and adds `==`). *)
 
+concat          ::= additive { "||" additive } ;
+                     (* `||` string concatenation, DuckDB/Postgres-style:
+                        both operands stringify via `Value`'s `Display`
+                        rather than requiring `STRING` (`1 || 'x'` is
+                        valid, produces `"1x"`). Binds LOOSER than `+`/
+                        `-`/`*`/`/`, matching DuckDB's own precedence --
+                        deliberately NOT sqlite-rs's placement (its own
+                        `concat-expr` binds tighter than `*`/`/`, a real
+                        SQLite quirk column-rs does not follow, since
+                        this grammar targets DuckDB parity, not
+                        SQLite's). db-core#34. *)
+
 additive        ::= multiplicative { ( "+" | "-" ) multiplicative } ;
 
-multiplicative  ::= primary { ( "*" | "/" ) primary } ;
+multiplicative  ::= unary { ( "*" | "/" ) unary } ;
                      (* no `%` -- see the file header. *)
+
+unary           ::= { "+" | "-" } primary ;
+                     (* leading `+`/`-`: `+` is a no-op (not represented
+                        in the AST); `-` wraps in a negation node,
+                        chainable (`--x` parses). db-core#34. *)
 
 primary         ::= column-ref
                    | INTEGER
@@ -352,8 +369,11 @@ STRING          ::= "'" { any character except "'" } "'" ;
  *   - comma-join, NATURAL JOIN, USING(...)
  *   - subqueries in FROM
  *   - multiple WHERE conditions combined with a semi-join
- *   - unary minus, LIKE, BETWEEN, CASE
- *   - string concatenation
+ *   - LIKE, BETWEEN, CASE
+ *   - COLLATE (considered alongside unary minus/concat in db-core#34,
+ *     deliberately deferred -- a locale-comparison feature, lower value
+ *     for a Parquet analytics engine than the other two; add only if
+ *     something concrete needs it)
  *   - multi-column ORDER BY at the top level (only inside OVER (...))
  *   - OFFSET
  *   - INSERT/UPDATE/DELETE/CREATE/DROP/ALTER -- column-rs never writes
