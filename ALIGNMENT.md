@@ -86,20 +86,44 @@ is a new, so-far-column-rs-only crate that happens to have room reserved
 for a row executor. Re-check this section once `row.rs` gets real content
 or sqlite-rs is asked to depend on it.
 
-### 4. `JoinKind` vs sqlite-rs's `JoinOp` — still a real gap, still open
+### 4. `JoinKind` vs sqlite-rs's `JoinOp` — closed (2026-09-03)
 
-`sql_expr::JoinKind` (`db-core/sql-expr/src/lib.rs`) has 2 variants:
-`Inner`, `Left`. sqlite-rs's `JoinOp` (`sqlite-rs/tests/unit/parser.rs`
-usage confirms at least `Inner`, `Left`, `Cross` exist) has more —
-tracking a `CROSS`/`RIGHT`/`FULL JOIN` grammar sqlite-rs already parses
-and t-rust-db's `column-rs` does not.
+Checked as of 2026-09-02 while working issue #1: `sql_expr::JoinKind`
+(`db-core/sql-expr/src/lib.rs`) had only `Inner`/`Left`, while
+sqlite-rs's `JoinOp` also has `Cross`/`Right`/`Full` — the companion
+db-core work to grow `sql-parser`/`sql-expr` with `SELECT *`, table
+aliases, and `CROSS`/`RIGHT`/`FULL JOIN` was still in flight.
 
-Checked as of 2026-09-02 while working issue #1: a companion db-core
-issue is in flight to grow `sql-parser`/`sql-expr` with `SELECT *`, table
-aliases, and `CROSS`/`RIGHT`/`FULL JOIN` (which would grow `JoinKind` to
-match). As of this check, `sql-expr::JoinKind` was still exactly
-`Inner`/`Left` — the gap has not yet closed. Re-check this section once
-that work lands (or update it directly if you're the one landing it).
+**Closed.** `sql_expr::JoinKind` now has `Inner`/`Left`/`Right`/`Full`/
+`Cross` — the same five sqlite-rs's `JoinOp` has (`CROSS JOIN` requires
+an accompanying top-level `LIMIT`, `db-core/sql-parser::column`'s own
+DO-178C bounded-execution rule). No gap remains between the two engines'
+`JOIN` vocabularies.
+
+### 5. Parser convergence: `sql-parser` now houses sqlite-rs's own grammar too (2026-09-03)
+
+Section 3's opcode-set reversal ("consolidate all three `sql-vm`
+executors in one crate, not split by strategy across repos") has a
+parser-layer counterpart: `db-core#19`/`#23` restructured `sql-parser`
+into one crate with `column`/`row` Cargo-feature sections (`db-core` ADR
+0002), migrating sqlite-rs's entire `src/parser/*` (tokenizer, AST,
+recursive-descent parser, three-way parse outcome, AST printer) into
+`sql_parser::row` as a mechanical port.
+
+**What this means for sqlite-rs specifically:** same as section 3 —
+nothing has moved *out* of sqlite-rs. `sqlite-rs/src/parser/*` is
+untouched; `db-core/sql_parser::row` is an independent copy, not a
+shared dependency sqlite-rs itself pulls in. Whether sqlite-rs ever
+switches to depending on `sql_parser::row` instead of its own copy is a
+separate, larger question (its own crate publishing/versioning story)
+not decided by this convergence.
+
+**What this means for this repo:** see `DECISIONS.md`'s entry
+"Revisited after `db-core/sql-parser`'s row/column split — decision
+holds" — `column-rs.ebnf` remains this repo's only `.ebnf` file.
+`sql_parser::row` doesn't get one: it's a copy of sqlite-rs's grammar,
+not an independent one, so sqlite-rs's own `.openspec/grammar/
+sqlite.ebnf` already covers it.
 
 ## What to check again before any future integration
 
