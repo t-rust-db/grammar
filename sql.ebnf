@@ -60,6 +60,31 @@
  *     pure terminals, identical in both. What it wraps differs per
  *     engine (column-rs: a `select-stmt` only; sqlite-rs: any
  *     `sql-stmt`) -- see each section's own top-level rule.
+ *   - `comparison-op` -- the 7 comparison operators both engines accept
+ *     identically (`=`, `!=`, `<>`, `<`, `<=`, `>`, `>=`). Pure
+ *     terminals, no nonterminal reference, so -- unlike the operator
+ *     LEVELS that use it -- it's genuinely safe to share. See its own
+ *     entry below for what each engine does with it beyond the shared
+ *     set (sqlite-rs adds `==` and splits the set across two precedence
+ *     tiers; column-rs treats it as one flat, non-chainable tier).
+ *
+ * Tried harder and still rejected: can `additive-expr`'s SHAPE (not
+ * just its operator set) be shared, given both engines' real parser
+ * functions (`additive` in column.rs, `additive_expr` in
+ * row/grammar.rs) do the exact same precedence-climbing fold over `+`/
+ * `-`? The shape is identical -- but `additive-expr`'s body must name
+ * its own next-level operand (`multiplicative`/`multiplicative-expr`),
+ * and that's exactly the same "shared rule referencing a per-engine
+ * rule" problem `and-expr` hit above, one level down. A shared
+ * `additive-expr` would need either (a) a real generic/parameterized
+ * nonterminal, which plain EBNF has no notation for, or (b) forcing
+ * column-rs's `primary` to be re-described as walking through sqlite-
+ * rs's `concat-expr`/`collate-expr`/`unary-expr` wrapper levels it
+ * doesn't actually have real parser functions for -- which would break
+ * this file's own founding principle (both former files: "structural
+ * re-derivation of the actual parser... every rule has a corresponding
+ * parser function") for the sake of a shorter grammar file. Kept
+ * separate; not a missed opportunity, a checked and rejected one.
  *
  * Maintenance rule: any change to either engine's grammar (`db-core/
  * sql-parser::column` or `::row` / sqlite-rs's own parser) MUST update
@@ -88,6 +113,21 @@ explain-prefix  ::= "EXPLAIN" [ "QUERY" "PLAN" ] ;
                      (* identical token sequence in both grammars. What
                         it wraps differs per engine -- see each section's
                         own top-level statement rule. *)
+
+comparison-op   ::= "=" | "!=" | "<>" | "<" | "<=" | ">" | ">=" ;
+                     (* the 7 operators both engines accept identically.
+                        column-rs's own `comp-op` (section 2) is exactly
+                        this set, used at one flat, non-chainable
+                        precedence tier. sqlite-rs (section 3) splits
+                        this SAME set across two tiers -- `equality-tail`
+                        gets `=`/`<>`/`!=` (plus its own `==` synonym,
+                        NOT part of this shared set), `relational-expr`
+                        gets `<`/`<=`/`>`/`>=` -- and allows chaining
+                        (`a < b < c`) where column-rs's parser rejects a
+                        second comparison outright. Same operator
+                        vocabulary, different precedence policy and
+                        cardinality -- see each section for its own use
+                        of this set. *)
 
 (* ================================================================
  * ===== 2. COLUMN-RS ONLY =====
@@ -240,11 +280,11 @@ comparison      ::= additive [ ( comp-op additive ) | ( "IS" [ "NOT" ] "NULL" ) 
                         at most one comparison operator (or one
                         IS [NOT] NULL test) per comparison level *)
 
-comp-op         ::= "=" | "!=" | "<>" | "<" | "<=" | ">" | ">=" ;
-                     (* narrower than sqlite-rs's own comparison
-                        operators (no `==`) and collapsed into one
-                        precedence tier where sqlite-rs splits equality
-                        from relational -- see the file header. *)
+comp-op         ::= comparison-op ;
+                     (* SHARED with sqlite-rs -- see SHARED above.
+                        column-rs collapses this set into one flat,
+                        non-chainable precedence tier, where sqlite-rs
+                        splits it across two (and adds `==`). *)
 
 additive        ::= multiplicative { ( "+" | "-" ) multiplicative } ;
 
@@ -537,7 +577,9 @@ and-expr        ::= not-expr { "AND" not-expr } ;                         (* V2 
 not-expr        ::= { "NOT" } equality-expr ;                             (* V2 [parse.y:1448] *)
 
 equality-expr   ::= relational-expr { equality-tail } ;                   (* V2 *)
-equality-tail   ::= ( "=" | "==" | "!=" | "<>" ) relational-expr          (* V2 [parse.y:1350,1352] *)
+equality-tail   ::= ( "=" | "==" | "!=" | "<>" ) relational-expr          (* V2 [parse.y:1350,1352]; `=`/`!=`/`<>`
+                                                                              are 3 of SHARED `comparison-op`'s 7 --
+                                                                              `==` is this engine's own extra synonym *)
                   | "IS" [ "NOT" ] relational-expr                        (* V2 [parse.y expr ::= expr IS expr] *)
                   | "ISNULL"                                              (* V2 [parse.y expr ::= expr ISNULL] *)
                   | "NOTNULL" | "NOT" "NULL"                              (* V2 [parse.y expr ::= expr NOTNULL] *)
@@ -550,7 +592,8 @@ equality-tail   ::= ( "=" | "==" | "!=" | "<>" ) relational-expr          (* V2 
                                                                           (* V2 [parse.y expr ::= expr likeop expr] *)
 like-op         ::= "LIKE" | "GLOB" ;                                     (* V2; "REGEXP"|"MATCH" V7+ (need functions) *)
 
-relational-expr ::= bitwise-expr { ( "<" | "<=" | ">" | ">=" ) bitwise-expr } ;  (* V2 [parse.y:1354] *)
+relational-expr ::= bitwise-expr { ( "<" | "<=" | ">" | ">=" ) bitwise-expr } ;  (* V2 [parse.y:1354]; the other 4
+                                                                                    of SHARED `comparison-op`'s 7 *)
 bitwise-expr    ::= additive-expr { ( "&" | "|" | "<<" | ">>" ) additive-expr } ; (* V2 [parse.y:1353] *)
 additive-expr   ::= multiplicative-expr { ( "+" | "-" ) multiplicative-expr } ;   (* V2 [parse.y:1355] *)
 multiplicative-expr ::= concat-expr { ( "*" | "/" | "%" ) concat-expr } ;         (* V2 [parse.y:1357] *)

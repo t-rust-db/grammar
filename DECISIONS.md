@@ -155,3 +155,42 @@ oversight: forcing every same-named rule into one shared definition is
 what produced the `and-expr`/`not-expr` problem above. Before adding
 anything to Shared, verify it survives BOTH conditions (a) and (b), not
 just "these two rules currently look alike."
+
+## Pushed harder on synergy after feedback — one more shared rule, one documented dead end (2026-09-03)
+
+Feedback on the entry above: two shared rules felt thin — asked whether
+something like optional sub-expressions could get more out of the
+overlap. Went back and tried, specifically at the levels that looked
+closest: comparison operators and the `additive`/`multiplicative`
+arithmetic chain.
+
+**Found one more genuine win: `comparison-op`.** The 7 operators
+(`=`,`!=`,`<>`,`<`,`<=`,`>`,`>=`) are pure terminals — no nonterminal
+reference, so unlike the LEVELS built on top of them, there's no
+referential-ambiguity risk. column-rs's `comp-op` is now `::=
+comparison-op ;`; sqlite-rs's `equality-tail`/`relational-expr` (which
+split this same set across two precedence tiers, plus sqlite-rs's own
+`==` synonym) cross-reference it in comments rather than literally
+aliasing, since neither of *their* bodies is just this token set alone.
+
+**Tried and rejected: sharing `additive-expr`'s shape** (not just its
+operator set). Both engines' real parser functions
+(`additive`/`additive_expr`) do the identical precedence-climbing fold
+over `+`/`-` — genuinely tempting. But `additive-expr` must name its own
+next-level operand, and that operand differs by engine
+(`multiplicative`/`multiplicative-expr`) — the exact same problem
+`and-expr`/`not-expr` hit one level up, just one level down instead.
+Two ways out, both rejected:
+  - A parameterized/generic nonterminal — plain EBNF has no such
+    notation, and inventing one for this single case would cost more
+    reader-clarity than it buys.
+  - Re-describing column-rs's `primary` as walking through sqlite-rs's
+    `concat-expr`/`collate-expr`/`unary-expr` wrapper levels (which
+    would always be empty for column-rs) — technically valid language-
+    theoretically, but breaks both former files' own founding principle
+    ("structural re-derivation of the actual parser... every rule has a
+    corresponding parser function") for column-rs, which has no such
+    wrapper functions in `column.rs` at all.
+
+Recorded directly in `sql.ebnf`'s own header (not just here) so a
+future editor sees the attempt and the reason, not just the absence.
