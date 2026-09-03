@@ -1,14 +1,373 @@
 (*
- * sqlite-rs -- SQL grammar source of truth (issue #63, epic #56)
+ * t-rust-db -- unified SQL grammar source of truth
  *
- * Promoted here (not just referenced) because sqlite-rs itself is being
- * absorbed into the t-rust-db org (see README.md/DECISIONS.md) --
- * superseding this repo's earlier "reference, don't mirror" call, which
- * was predicated on sqlite-rs staying a separate, pre-existing project.
- * Canonical source: sqlite-rs/.openspec/grammar/sqlite.ebnf. Keep this
- * copy in sync with that file (see the Maintenance rule below and
- * README.md) until/unless sqlite-rs's own repo is folded in directly and
- * this becomes the only copy.
+ * ONE file, THREE sections, replacing the earlier column-rs.ebnf +
+ * sqlite-rs.ebnf split:
+ *
+ *   1. SHARED         -- productions genuinely, word-for-word identical
+ *                        AND self-contained (no reference into a rule
+ *                        that itself differs per engine) between the two
+ *                        grammars. Defined once, referenced by name from
+ *                        both sections below.
+ *   2. COLUMN-RS ONLY -- db-core/sql-parser's `column` Cargo-feature
+ *                        section: column-rs's analytics-over-Parquet
+ *                        subset (SELECT only, no writes).
+ *   3. SQLITE-RS ONLY (including DDL) -- db-core/sql-parser's `row`
+ *                        Cargo-feature section: sqlite-rs's own grammar,
+ *                        migrated in unchanged (`db-core#23`) -- DDL,
+ *                        DML, transactions, PRAGMA, and sqlite-rs's much
+ *                        richer expression grammar.
+ *
+ * Sections 2 and 3 each remain a complete, self-contained grammar when
+ * read on its own -- exactly the content of the two former files, just
+ * placed under one roof. Some rule NAMES repeat across sections (both
+ * define `sql-stmt`, `expr`, `or-expr`, `table-name`, `column-ref`, ...)
+ * because both grammars model the same SQL concepts under the same
+ * conventional names -- scoped by section, the same way the two former
+ * files each had their own `expr` without colliding. That is NOT the
+ * same thing as the SHARED section below, whose rules are deduplicated
+ * because they are provably identical everywhere they're used.
+ *
+ * What actually qualifies as SHARED, and what doesn't
+ * ----------------------------------------------------
+ * A rule only moves to SHARED if (a) both engines accept EXACTLY the
+ * same input for it, AND (b) it doesn't reference another nonterminal
+ * that itself diverges per engine -- otherwise a single "shared"
+ * production would silently mean something different depending on which
+ * engine's grammar you followed it from. Checked and rejected for that
+ * second reason: `expr`/`or-expr`/`and-expr` are textually IDENTICAL in
+ * both grammars (`expr ::= or-expr ;`, `or-expr ::= and-expr { "OR"
+ * and-expr } ;`, `and-expr ::= not-expr { "AND" not-expr } ;`) -- but
+ * each engine's `and-expr` bottoms out into a different `not-expr`
+ * (column-rs: `not-expr | comparison`; sqlite-rs: `{ "NOT" }
+ * equality-expr`, feeding a much richer operator ladder). A shared
+ * `and-expr` would have to pick one `not-expr` to point at, silently
+ * misdescribing the other engine. So these stay defined per section
+ * below, each self-contained -- genuinely identical text, deliberately
+ * NOT deduplicated, for the reason above. Likewise rejected: comparison
+ * operators (sqlite-rs also accepts `==`), arithmetic (sqlite-rs's
+ * `multiplicative-expr` has `%` and more precedence tiers below it),
+ * identifiers (sqlite-rs additionally accepts quoted forms), string
+ * literals (sqlite-rs's tokenizer supports `''`-doubling; column-rs's
+ * doesn't), and JOIN grammar (sqlite-rs's chain is strictly larger).
+ *
+ * What IS shared (self-contained, no downstream ambiguity):
+ *   - `ident-chars` -- the unquoted-identifier character class. Both
+ *     engines' tokenizers accept exactly this for a bare identifier.
+ *     sqlite-rs's own `identifier` extends it with quoting (see its
+ *     section); column-rs's `IDENT` is exactly this, nothing more.
+ *   - `explain-prefix` -- the `EXPLAIN [QUERY PLAN]` token sequence,
+ *     pure terminals, identical in both. What it wraps differs per
+ *     engine (column-rs: a `select-stmt` only; sqlite-rs: any
+ *     `sql-stmt`) -- see each section's own top-level rule.
+ *   - `comparison-op` -- the 7 comparison operators both engines accept
+ *     identically (`=`, `!=`, `<>`, `<`, `<=`, `>`, `>=`). Pure
+ *     terminals, no nonterminal reference, so -- unlike the operator
+ *     LEVELS that use it -- it's genuinely safe to share. See its own
+ *     entry below for what each engine does with it beyond the shared
+ *     set (sqlite-rs adds `==` and splits the set across two precedence
+ *     tiers; column-rs treats it as one flat, non-chainable tier).
+ *
+ * Tried harder and still rejected: can `additive-expr`'s SHAPE (not
+ * just its operator set) be shared, given both engines' real parser
+ * functions (`additive` in column.rs, `additive_expr` in
+ * row/grammar.rs) do the exact same precedence-climbing fold over `+`/
+ * `-`? The shape is identical -- but `additive-expr`'s body must name
+ * its own next-level operand (`multiplicative`/`multiplicative-expr`),
+ * and that's exactly the same "shared rule referencing a per-engine
+ * rule" problem `and-expr` hit above, one level down. A shared
+ * `additive-expr` would need either (a) a real generic/parameterized
+ * nonterminal, which plain EBNF has no notation for, or (b) forcing
+ * column-rs's `primary` to be re-described as walking through sqlite-
+ * rs's `concat-expr`/`collate-expr`/`unary-expr` wrapper levels it
+ * doesn't actually have real parser functions for -- which would break
+ * this file's own founding principle (both former files: "structural
+ * re-derivation of the actual parser... every rule has a corresponding
+ * parser function") for the sake of a shorter grammar file. Kept
+ * separate; not a missed opportunity, a checked and rejected one.
+ *
+ * Maintenance rule: any change to either engine's grammar (`db-core/
+ * sql-parser::column` or `::row` / sqlite-rs's own parser) MUST update
+ * the corresponding section of THIS file in the same PR/commit. Before
+ * touching a SHARED rule, re-verify it's still identical AND still
+ * self-contained in both engines -- if a change breaks either
+ * condition, move it back into each engine's own section rather than
+ * leaving a "shared" rule that's only true for one of them.
+ *
+ * Notation: ::=  rule definition          |    alternation
+ *           []   optional (0 or 1)        {}   repetition (0 or more)
+ *           ""   literal keyword/punct (keywords case-insensitive)
+ *           UPPERCASE  lexer token
+ *)
+
+(* ================================================================
+ * ===== 1. SHARED =====
+ * ================================================================
+ *)
+
+ident-chars     ::= ( ALPHA | "_" ) { ALPHA | DIGIT | "_" } ;
+                     (* the unquoted-identifier character shape, accepted
+                        identically by both tokenizers. *)
+
+explain-prefix  ::= "EXPLAIN" [ "QUERY" "PLAN" ] ;
+                     (* identical token sequence in both grammars. What
+                        it wraps differs per engine -- see each section's
+                        own top-level statement rule. *)
+
+comparison-op   ::= "=" | "!=" | "<>" | "<" | "<=" | ">" | ">=" ;
+                     (* the 7 operators both engines accept identically.
+                        column-rs's own `comp-op` (section 2) is exactly
+                        this set, used at one flat, non-chainable
+                        precedence tier. sqlite-rs (section 3) splits
+                        this SAME set across two tiers -- `equality-tail`
+                        gets `=`/`<>`/`!=` (plus its own `==` synonym,
+                        NOT part of this shared set), `relational-expr`
+                        gets `<`/`<=`/`>`/`>=` -- and allows chaining
+                        (`a < b < c`) where column-rs's parser rejects a
+                        second comparison outright. Same operator
+                        vocabulary, different precedence policy and
+                        cardinality -- see each section for its own use
+                        of this set. *)
+
+(* ================================================================
+ * ===== 2. COLUMN-RS ONLY =====
+ * db-core/sql-parser's `column` Cargo-feature section
+ * (db-core/sql-parser/src/column.rs) -- column-rs's analytics-over-
+ * Parquet subset: SELECT only, no DDL/DML, no transactions, no PRAGMA,
+ * no CTEs. Every rule here has a corresponding parser function; nothing
+ * is listed as supported that parse()/parse_explain() cannot actually
+ * accept. Self-contained: every rule referenced here is defined in this
+ * section or in SHARED above.
+ * ================================================================
+ *)
+
+sql-stmt        ::= [ explain-prefix ] select-stmt ;
+                     (* the ONLY statement form -- no INSERT/UPDATE/
+                        DELETE/DDL/transactions/PRAGMA; column-rs reads
+                        Parquet, it never writes. `explain-prefix`: see
+                        SHARED above -- unlike sqlite-rs, only ever wraps
+                        a `select-stmt`. *)
+
+(* ----- SELECT ----- *)
+
+select-stmt     ::= "SELECT" select-list
+                     "FROM" from-clause
+                     { join-clause }
+                     [ where-clause ]
+                     [ group-by-clause ]
+                     [ order-by-clause ]
+                     [ limit-clause ] ;
+
+select-list     ::= select-item { "," select-item } ;
+
+select-item     ::= "*"
+                   | column-ref
+                   | agg-call
+                   | window-call ;
+                     (* bare `*` expands to every column of the query's
+                        table(s), resolved by the caller/executor (which
+                        has the schema) at compile time -- sql-parser has
+                        no access to a table's schema itself, so `*` is
+                        carried through as an AST-level marker
+                        (sql_expr::SelectItem::Star) rather than expanded
+                        here. No arbitrary expressions in the select list
+                        beyond `*`, a bare column, an aggregate call, or a
+                        window call *)
+
+agg-call        ::= agg-func "(" ( column-ref | "*" ) ")" ;
+                     (* `*` only valid for COUNT -- COUNT(*); enforced at
+                        the AST/execution layer, not the grammar *)
+
+agg-func        ::= "COUNT" | "SUM" | "AVG" | "MIN" | "MAX" ;
+
+window-call     ::= ranking-call | offset-call | value-call | agg-over-call ;
+
+ranking-call    ::= ( "ROW_NUMBER" | "RANK" | "DENSE_RANK" ) "(" ")"
+                     "OVER" over-clause ;
+
+offset-call     ::= ( "LAG" | "LEAD" ) "(" column-ref [ "," INTEGER ] ")"
+                     "OVER" over-clause ;
+                     (* INTEGER is the offset, default 1 when omitted --
+                        the default is applied by the AST layer, not here *)
+
+value-call      ::= ( "FIRST_VALUE" | "LAST_VALUE" ) "(" column-ref ")"
+                     "OVER" over-clause ;
+
+agg-over-call   ::= ( "SUM" | "AVG" | "COUNT" ) "(" column-ref ")"
+                     "OVER" over-clause ;
+
+over-clause     ::= "(" [ "PARTITION" "BY" ident-list ]
+                         [ "ORDER" "BY" order-item { "," order-item } ]
+                     ")" ;
+
+(* ----- FROM / JOIN -----
+ * Equi-joins only (except CROSS, which has no condition), one ON clause
+ * per non-CROSS join. Table aliases are a bare trailing identifier (no
+ * `AS`) resolved at parse time: `FROM orders o` lets `o.col` stand for
+ * `orders.col` anywhere in the query, but the alias itself never appears
+ * in the parsed AST (sql_expr::Query/Join only ever hold real table
+ * names) -- it's rewritten away before the AST is built. No comma-join,
+ * no NATURAL, no USING(...), no subqueries in FROM. Compare sqlite-rs's
+ * own `from-clause`/`join-op` in section 3 -- a strictly larger chain
+ * this is a narrow subset of; NOT shared (see the file header). *)
+
+from-clause     ::= table-name [ alias ] ;
+
+join-clause     ::= join-kind table-name [ alias ] [ "ON" column-ref "=" column-ref ] ;
+                     (* the "ON ..." condition is REQUIRED for every
+                        join-kind except "CROSS JOIN", and FORBIDDEN for
+                        "CROSS JOIN" (an unconditional cross product) *)
+
+join-kind       ::= "JOIN"
+                   | "INNER" "JOIN"
+                   | "LEFT" [ "OUTER" ] "JOIN"
+                   | "RIGHT" [ "OUTER" ] "JOIN"
+                   | "FULL" [ "OUTER" ] "JOIN"
+                   | "CROSS" "JOIN" ;
+                     (* a query containing a "CROSS JOIN" MUST also have a
+                        top-level LIMIT clause -- enforced by the parser,
+                        not by this grammar's shape, as a DO-178C
+                        bounded-execution rule: an unconditional cross
+                        product has no natural row cap the way an
+                        equi-join's selectivity gives it *)
+
+alias           ::= IDENT ;
+                     (* any IDENT not itself one of this grammar's
+                        following keywords (JOIN/INNER/LEFT/RIGHT/FULL/
+                        CROSS/OUTER/ON/WHERE/GROUP/ORDER/LIMIT) is taken as
+                        an alias -- there is no "AS" keyword *)
+
+(* ----- WHERE -----
+ * Two mutually exclusive forms: an expression, or a bare semi-join. The
+ * semi-join form must be the ENTIRE where-clause -- it cannot be combined
+ * with other conditions via AND/OR (unlike a real SQL engine, where
+ * `x IN (...)` is just another boolean-valued expression). *)
+
+where-clause    ::= "WHERE" ( semi-join | expr ) ;
+
+semi-join       ::= column-ref "IN" "(" select-stmt ")" ;
+                     (* the subquery is itself a full select-stmt,
+                        recursively -- but see select-stmt's caller: a
+                        subquery position stops at its closing ")" rather
+                        than expecting end-of-input, unlike the top-level
+                        statement *)
+
+(* ----- Expressions -----
+ * Standard precedence climb: OR < AND < NOT < comparison < additive <
+ * multiplicative < primary. No unary minus, no LIKE/BETWEEN, no string
+ * concatenation, no CASE.
+ *
+ * `expr`/`or-expr`/`and-expr` below are textually IDENTICAL to sqlite-
+ * rs's own (section 3) -- deliberately NOT moved to SHARED, because
+ * `and-expr` bottoms out into `not-expr`, and THIS section's `not-expr`
+ * differs from sqlite-rs's. See the file header's "What actually
+ * qualifies as SHARED" note. *)
+
+expr            ::= or-expr ;
+
+or-expr         ::= and-expr { "OR" and-expr } ;
+
+and-expr        ::= not-expr { "AND" not-expr } ;
+
+not-expr        ::= "NOT" not-expr
+                   | comparison ;
+                     (* right-recursive so `NOT NOT x` parses; binds
+                        tighter than AND/OR, looser than comparison:
+                        `NOT a = b AND c` is `(NOT (a = b)) AND c` *)
+
+comparison      ::= additive [ ( comp-op additive ) | ( "IS" [ "NOT" ] "NULL" ) ] ;
+                     (* non-associative: `a = b = c` is not accepted --
+                        at most one comparison operator (or one
+                        IS [NOT] NULL test) per comparison level *)
+
+comp-op         ::= comparison-op ;
+                     (* SHARED with sqlite-rs -- see SHARED above.
+                        column-rs collapses this set into one flat,
+                        non-chainable precedence tier, where sqlite-rs
+                        splits it across two (and adds `==`). *)
+
+additive        ::= multiplicative { ( "+" | "-" ) multiplicative } ;
+
+multiplicative  ::= primary { ( "*" | "/" ) primary } ;
+                     (* no `%` -- see the file header. *)
+
+primary         ::= column-ref
+                   | INTEGER
+                   | FLOAT
+                   | STRING
+                   | "(" expr ")" ;
+
+(* ----- GROUP BY / ORDER BY / LIMIT ----- *)
+
+group-by-clause ::= "GROUP" "BY" ident-list ;
+
+order-by-clause ::= "ORDER" "BY" column-ref [ "ASC" | "DESC" ] ;
+                     (* exactly one column -- no multi-column ORDER BY *)
+
+order-item      ::= column-ref [ "ASC" | "DESC" ] ;
+                     (* used inside OVER (...ORDER BY...), which DOES
+                        allow multiple columns, unlike the top-level
+                        order-by-clause above *)
+
+limit-clause    ::= "LIMIT" INTEGER ;
+                     (* non-negative integer only; no OFFSET *)
+
+(* ----- Lexical ----- *)
+
+ident-list      ::= column-ref { "," column-ref } ;
+
+column-ref      ::= IDENT [ "." IDENT ] ;
+                     (* `col` or `table.col`; more than one `.` is not a
+                        column reference this grammar recognizes (no
+                        schema.table.col). sqlite-rs's own `column-ref`
+                        (section 3) allows up to 3 parts -- NOT shared. *)
+
+table-name      ::= IDENT ;
+                     (* the Parquet file's stem, per column-rs's table
+                        resolution -- not validated by the grammar itself *)
+
+IDENT           ::= ident-chars ;
+                     (* unquoted only -- no `"quoted"`/`[bracketed]`/
+                        `` `backticked` `` forms sqlite-rs's own
+                        `identifier` accepts (section 3). `ident-chars`:
+                        see SHARED above. *)
+
+INTEGER         ::= DIGIT { DIGIT } ;
+FLOAT           ::= DIGIT { DIGIT } "." DIGIT { DIGIT } ;
+                     (* exactly one decimal point, digits on both sides
+                        -- no `1e5`/`.5`/`1.` forms sqlite-rs's own
+                        `NUMBER` accepts (section 3); NOT shared. *)
+STRING          ::= "'" { any character except "'" } "'" ;
+                     (* no escape sequences, no doubled-quote escaping --
+                        NOT shared with sqlite-rs's own `STRING`, whose
+                        tokenizer supports `''`-doubling. See the file
+                        header. *)
+
+(* ----- Not supported (deliberately) -----
+ * Tracked here so the grammar's negative space is visible, not just its
+ * positive space. Adding any of these means growing sql-parser's
+ * `column` section AND this file in the same change (see Maintenance
+ * rule above).
+ *
+ *   - comma-join, NATURAL JOIN, USING(...)
+ *   - subqueries in FROM
+ *   - multiple WHERE conditions combined with a semi-join
+ *   - unary minus, LIKE, BETWEEN, CASE
+ *   - string concatenation
+ *   - multi-column ORDER BY at the top level (only inside OVER (...))
+ *   - OFFSET
+ *   - INSERT/UPDATE/DELETE/CREATE/DROP/ALTER -- column-rs never writes
+ *   - transactions, PRAGMA, CTEs (WITH), views
+ *)
+
+(* ================================================================
+ * ===== 3. SQLITE-RS ONLY (including DDL) =====
+ * db-core/sql-parser's `row` Cargo-feature section
+ * (db-core/sql-parser/src/row/*), migrated in unchanged from sqlite-rs's
+ * own parser (db-core#23). sqlite-rs itself is being absorbed into the
+ * `t-rust-db` org (`t-rust-db/sqlite-rs`) -- see DECISIONS.md.
+ * Self-contained: every rule referenced here is defined in this section
+ * or in SHARED above.
  *
  * SQLite publishes NO EBNF. The upstream authorities are:
  *   - src/parse.y (Lemon LALR grammar, action-annotated) -- pinned at 3.53.4:
@@ -17,29 +376,19 @@
  *     https://www.sqlite.org/syntaxdiagrams.html
  *   - Prose reference:
  *     https://www.sqlite.org/lang.html
- * This file is a structural re-derivation of parse.y (no SQLite source text
- * copied) in standard EBNF. Where a rule was distilled from a verified
- * parse.y location it carries `[parse.y:LINE rulename]`; rules added beyond
- * the original spike distillation carry the parse.y rule NAME only.
+ * This section is a structural re-derivation of parse.y (no SQLite
+ * source text copied) in standard EBNF. Where a rule was distilled from
+ * a verified parse.y location it carries `[parse.y:LINE rulename]`;
+ * rules added beyond the original spike distillation carry the parse.y
+ * rule NAME only.
  *
  * V-BLOCK ANNOTATIONS: every rule is tagged with the value block
  * (plan.md) in which sqlite-rs implements it -- `(* V2 *)`, `(* V3 *)`, ...
- * The grammar file thereby tracks the plan's production coverage
- * (V2 ~20%, V3 ~45%, V4 ~80%, V7+ 100%). Rules for future blocks are
- * listed as stubs under "Future blocks" so the denominator is visible.
- *
- * Maintenance rule (mirrors spec 005): any ticket that grows the parser
- * MUST grow this file in the same PR, with V-block tags and parse.y refs.
- * Promoted from tests/spike/001_parser/grammar/sqlite-subset.ebnf (frozen
- * spike record, kept untouched).
- *
- * Notation: ::=  rule definition          |    alternation
- *           []   optional (0 or 1)        {}   repetition (0 or more)
- *           ""   literal keyword/punct (keywords case-insensitive)
- *           UPPERCASE  lexer token
+ * The grammar thereby tracks the plan's production coverage (V2 ~20%,
+ * V3 ~45%, V4 ~80%, V7+ 100%). Rules for future blocks are listed as
+ * stubs under "Future blocks" so the denominator is visible.
+ * ================================================================
  *)
-
-(* ===================== Top level ===================== *)
 
 sql-stmt        ::= select-stmt        (* V2/V6 -- select-stmt now carries an
                                               optional leading with-clause, see below *)
@@ -69,10 +418,12 @@ sql-stmt        ::= select-stmt        (* V2/V6 -- select-stmt now carries an
                      below, #388); ANALYZE's bare-name/no-argument forms landed
                      at V7 (#461) -- see analyze-stmt below *)
 
-explain-stmt    ::= "EXPLAIN" [ "QUERY" "PLAN" ] sql-stmt ;
-                     (* V4 [parse.y:173 explain] *)
+explain-stmt    ::= explain-prefix sql-stmt ;
+                     (* V4 [parse.y:173 explain]. `explain-prefix`: see
+                        SHARED above -- unlike column-rs, wraps ANY
+                        `sql-stmt`, not just a SELECT. *)
 
-(* ===================== SELECT (V2 slice, FROM/JOIN + GROUP BY/HAVING + UNION/UNION ALL V4/V6 slice) =====================
+(* ----- SELECT (V2 slice, FROM/JOIN + GROUP BY/HAVING + UNION/UNION ALL V4/V6 slice) -----
  * [parse.y:520 cmd, :654 oneselect, :710 selcollist, :750 from, :925 orderby_opt, :967 limit_opt, :1002 where_opt]
  * V2 restrictions vs full parse.y: no window clause (V9). The FROM
  * clause itself (`from-clause` below) is now the V4 full JOIN slice
@@ -170,7 +521,9 @@ table-ref       ::= table-name [ [ "AS" ] identifier ]    (* V2 [parse.y:762 sel
  * `unsupported(..)`. #250 is parser-only: codegen still only
  * implements INNER/LEFT/CROSS with an `ON` constraint --
  * `compile_select_joined` rejects NATURAL/RIGHT/FULL/USING joins with a
- * clean `Unsupported` error as an interim stopgap.
+ * clean `Unsupported` error as an interim stopgap. NOT shared with
+ * column-rs's own narrower `from-clause`/`join-kind` (section 2) --
+ * see the file header.
  *)
 from-clause     ::= table-ref { ( "," | join-op ) table-ref
                        [ "ON" expr | "USING" "(" column-name { "," column-name } ")" ] } ;
@@ -194,7 +547,7 @@ ordering-term   ::= expr [ "COLLATE" collation-name ]
 
 collation-name  ::= identifier ;                          (* V2: BINARY | NOCASE | RTRIM *)
 
-(* ===================== Expressions (V2 slice) =====================
+(* ----- Expressions (V2 slice) -----
  * [parse.y:1176 expr, :1193 term]
  * Precedence, LOWEST to HIGHEST, mirrors parse.y's %left/%right
  * declarations [parse.y:295-309] exactly:
@@ -212,6 +565,10 @@ collation-name  ::= identifier ;                          (* V2: BINARY | NOCASE
  *   ||                                        [%left CONCAT]
  *   COLLATE (postfix)                         [%left COLLATE]
  *   ~ unary + unary -                         [%right BITNOT]
+ *
+ * `expr`/`or-expr`/`and-expr` below are textually IDENTICAL to column-
+ * rs's own (section 2) -- deliberately NOT moved to SHARED; see the
+ * file header. Everything from `not-expr` down is sqlite-rs-specific.
  *)
 
 expr            ::= or-expr ;                                             (* V2 *)
@@ -220,7 +577,9 @@ and-expr        ::= not-expr { "AND" not-expr } ;                         (* V2 
 not-expr        ::= { "NOT" } equality-expr ;                             (* V2 [parse.y:1448] *)
 
 equality-expr   ::= relational-expr { equality-tail } ;                   (* V2 *)
-equality-tail   ::= ( "=" | "==" | "!=" | "<>" ) relational-expr          (* V2 [parse.y:1350,1352] *)
+equality-tail   ::= ( "=" | "==" | "!=" | "<>" ) relational-expr          (* V2 [parse.y:1350,1352]; `=`/`!=`/`<>`
+                                                                              are 3 of SHARED `comparison-op`'s 7 --
+                                                                              `==` is this engine's own extra synonym *)
                   | "IS" [ "NOT" ] relational-expr                        (* V2 [parse.y expr ::= expr IS expr] *)
                   | "ISNULL"                                              (* V2 [parse.y expr ::= expr ISNULL] *)
                   | "NOTNULL" | "NOT" "NULL"                              (* V2 [parse.y expr ::= expr NOTNULL] *)
@@ -233,7 +592,8 @@ equality-tail   ::= ( "=" | "==" | "!=" | "<>" ) relational-expr          (* V2 
                                                                           (* V2 [parse.y expr ::= expr likeop expr] *)
 like-op         ::= "LIKE" | "GLOB" ;                                     (* V2; "REGEXP"|"MATCH" V7+ (need functions) *)
 
-relational-expr ::= bitwise-expr { ( "<" | "<=" | ">" | ">=" ) bitwise-expr } ;  (* V2 [parse.y:1354] *)
+relational-expr ::= bitwise-expr { ( "<" | "<=" | ">" | ">=" ) bitwise-expr } ;  (* V2 [parse.y:1354]; the other 4
+                                                                                    of SHARED `comparison-op`'s 7 *)
 bitwise-expr    ::= additive-expr { ( "&" | "|" | "<<" | ">>" ) additive-expr } ; (* V2 [parse.y:1353] *)
 additive-expr   ::= multiplicative-expr { ( "+" | "-" ) multiplicative-expr } ;   (* V2 [parse.y:1355] *)
 multiplicative-expr ::= concat-expr { ( "*" | "/" | "%" ) concat-expr } ;         (* V2 [parse.y:1357] *)
@@ -265,19 +625,25 @@ function-call   ::= identifier "(" [ [ "DISTINCT" ] expr-list | "*" ] ")" ;
                         [parse.y:1235 expr ::= idj LP distinct exprlist RP]
                         V9: FILTER clause, OVER window *)
 
-literal-value   ::= NUMBER                                                (* V2: int, hex 0x, float incl. 1e5/.5/1. *)
-                  | STRING                                                (* V2: '...' with '' escaping *)
+literal-value   ::= NUMBER                                                (* V2: int, hex 0x, float incl. 1e5/.5/1. --
+                                                                              richer than column-rs's own INTEGER/
+                                                                              FLOAT (section 2); NOT shared *)
+                  | STRING                                                (* V2: '...' with '' escaping -- NOT shared
+                                                                              with column-rs's own STRING (section 2) *)
                   | BLOB                                                  (* V2: X'hex' *)
                   | "NULL" | "TRUE" | "FALSE"                             (* V2 *)
                   | "CURRENT_TIME" | "CURRENT_DATE" | "CURRENT_TIMESTAMP" ; (* V9: needs date/time fns *)
 
 parameter       ::= "?" | "?" NUMBER | ":" identifier | "@" identifier | "$" identifier ;  (* V2 *)
 
-column-ref      ::= identifier [ "." identifier [ "." identifier ] ] ;    (* V2 [parse.y:1178]; 3-part = db.tbl.col, ATTACH semantics V10 *)
+column-ref      ::= identifier [ "." identifier [ "." identifier ] ] ;    (* V2 [parse.y:1178]; 3-part = db.tbl.col,
+                                                                              ATTACH semantics V10. column-rs's own
+                                                                              `column-ref` (section 2) allows only 2
+                                                                              parts -- NOT shared. *)
 
 expr-list       ::= expr { "," expr } ;                                   (* V2 [parse.y:1605 nexprlist] *)
 
-(* ===================== DML (V3 block) =====================
+(* ----- DML (V3 block) -----
  * Carried from the spike distillation; V3 tickets grow these
  * (upsert/RETURNING are V9).
  *)
@@ -300,7 +666,7 @@ set-assignment  ::= column-name "=" expr
 
 delete-stmt     ::= "DELETE" "FROM" table-name [ "WHERE" expr ] ;         (* V3 [parse.y:978 cmd, :1002 where_opt] *)
 
-(* ===================== DDL (V3 block) ===================== *)
+(* ----- DDL (V3 block) ----- *)
 
 create-table-stmt ::= "CREATE" "TABLE" [ "IF" "NOT" "EXISTS" ] table-name
                        "(" column-def { "," column-def } [ "," table-constraint { "," table-constraint } ] ")"
@@ -353,8 +719,8 @@ drop-view-stmt  ::= "DROP" "VIEW" [ "IF" "EXISTS" ] view-name ;
 
 view-name       ::= identifier ;                                         (* V6 *)
 
-(* ===================== PRAGMA journal_mode / integrity_check / quick_check
- *                       / synchronous (V6/V7 carve-outs) =====================
+(* ----- PRAGMA journal_mode / integrity_check / quick_check
+ *       / synchronous (V6/V7 carve-outs) -----
  * [parse.y:1715 cmd ::= PRAGMA nm dbnm EQ nmnum, :1717 cmd ::= PRAGMA nm
  * dbnm] -- `nmnum` (parse.y:1723) is where `DELETE`/`FULL` are folded in
  * as bare keyword values alongside a plain `nm` (identifier) value like
@@ -385,7 +751,7 @@ pragma-stmt     ::= "PRAGMA" "journal_mode" "=" ( "WAL" | "DELETE" )
                      (* V7 [parse.y:1717 cmd] -- #540, #541 *)
                      (* V7 [parse.y:1715,1717 cmd] -- #645 *)
 
-(* ===================== ANALYZE (V7 carve-out) =====================
+(* ----- ANALYZE (V7 carve-out) -----
  * [parse.y:1875 cmd ::= ANALYZE, :1876 cmd ::= ANALYZE nm dbnm] --
  * `dbnm` (an optional `.`-qualified schema-name prefix on the table
  * name) is a stock-SQLite production this MVP carve-out doesn't
@@ -397,7 +763,7 @@ pragma-stmt     ::= "PRAGMA" "journal_mode" "=" ( "WAL" | "DELETE" )
 analyze-stmt    ::= "ANALYZE" [ table-name ] ;
                      (* V7 [parse.y:1875 cmd] -- #461 *)
 
-(* ===================== Transaction control (V5 slice) =====================
+(* ----- Transaction control (V5 slice) -----
  * [parse.y:181 cmd ::= BEGIN transtype trans_opt, :186 transtype,
  *  :190 cmd ::= COMMIT|END trans_opt, :191 cmd ::= ROLLBACK trans_opt]
  * `ROLLBACK ... TO SAVEPOINT nm` (parse.y:201) and SAVEPOINT/RELEASE
@@ -413,16 +779,22 @@ commit-stmt     ::= ( "COMMIT" | "END" ) [ "TRANSACTION" ] ;
 rollback-stmt   ::= "ROLLBACK" [ "TRANSACTION" ] ;
                      (* V5 [parse.y:191 cmd] *)
 
-(* ===================== Lexical (shared) =====================
+(* ----- Lexical (sqlite-rs-specific) -----
  * [parse.y:365-368 %token_class id/ids/idj; keyword fallback to ID
  *  at parse.y:262-283 %fallback ID]
  *)
 
 table-name      ::= identifier ;                                          (* V2 *)
 column-name     ::= identifier ;                                          (* V2 *)
-identifier      ::= ID ;   (* bare, "double-quoted", [bracketed], `backticked` -- V2 tokenizer (#60) *)
+identifier      ::= ident-chars                                           (* bare -- see SHARED above *)
+                   | quoted-identifier ;                                  (* V2 tokenizer (#60) *)
+quoted-identifier ::= '"' { any character, `""` escapes a literal `"` } '"'
+                     | "[" { any character except "]" } "]"
+                     | "`" { any character, "``" escapes a literal "`" } "`" ;
+                     (* NOT shared with column-rs's own `IDENT` (section
+                        2), which is `ident-chars` alone. *)
 
-(* ===================== Future blocks (stubs -- the denominator) =====================
+(* ----- Future blocks (stubs -- the denominator) -----
  * V4:  subqueries in FROM (table-valued)
  *      (#237 landed the INNER/LEFT [OUTER]/CROSS `JOIN ... ON` subset,
  *      #250 landed NATURAL/RIGHT/FULL joins, USING (...), and

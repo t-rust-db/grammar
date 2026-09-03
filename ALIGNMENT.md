@@ -127,11 +127,14 @@ not decided by this convergence.
 absorption into `t-rust-db` became clear — see `DECISIONS.md`'s
 "sqlite-rs is being absorbed into `t-rust-db`" entry (superseding the
 "decision holds, no `sqlite-rs.ebnf`" call made earlier the same day).
-`sqlite-rs.ebnf` is now promoted here too, alongside `column-rs.ebnf` —
-not because `sql_parser::row` needed its own file (it still doesn't; it
-stays a copy of sqlite-rs's grammar), but because sqlite-rs itself
-stopped being "a different repo in a different org" to reference instead
-of mirror.
+sqlite-rs's grammar is now promoted here too, not because
+`sql_parser::row` needed its own file (it still doesn't; it stays a copy
+of sqlite-rs's grammar), but because sqlite-rs itself stopped being "a
+different repo in a different org" to reference instead of mirror. Both
+grammars now live in one `sql.ebnf` (three sections: shared,
+column-rs-only, sqlite-rs-only) rather than two separate files — see
+`DECISIONS.md`'s "Unify column-rs.ebnf and sqlite-rs.ebnf" entry for
+what was actually found to be shareable (very little, and why).
 
 ## What to check again before any future integration
 
