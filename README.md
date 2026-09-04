@@ -1,3 +1,13 @@
+# Archived
+
+Folded into `t-rust-db/db-core`'s `sql-parser` crate:
+[`sql-parser/grammar.ebnf`](https://github.com/t-rust-db/db-core/blob/main/sql-parser/grammar.ebnf)
+(was `sql.ebnf`) and
+[`sql-parser/ALIGNMENT.md`](https://github.com/t-rust-db/db-core/blob/main/sql-parser/ALIGNMENT.md)
+(trimmed). See `db-core#43`.
+
+`DECISIONS.md`'s history (why this repo existed, why it was unified from
+two files to one, why it's now folded in) stays here, unmoved.
 # grammar
 
 SQL grammar reference for t-rust-db products, in standard EBNF.
